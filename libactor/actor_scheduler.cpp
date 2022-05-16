@@ -104,40 +104,30 @@ public:
 
     // 返回actor是否已结束
     bool ProcessMessage(ActorMessage &msg, unsigned priority) {
-        unsigned type = msg.type;
+        bool msg_processed = false;
 
-        auto iter = m_message_handlers.find(type);
-
-        if(iter == m_message_handlers.end()) {
-            actor_error_log("actor (%d:%s) can NOT get handler for message type %u",
-                    m_id, m_name.c_str(), type);
-            return false;
-        }
-
-        ACTOR_MESSAGE_HANDLER &handler = iter->second;
-
-        COROUTINE_ID co_id = m_coroutine_scheduler.New(std::bind(handler, msg));
-
-        ResumeCoroutine(co_id, priority);
-
-#ifdef ACTOR_SCHEDULER_PROFILING
-        ++m_statistics.message_processed;
-#endif
-
-        return m_state == ActorState::STOPPED;
-    }
-
-    // 返回actor是否已结束
-    bool ProcessPendingTasks() {
-        // 总体按优先级来
+process_task:
         for(unsigned i = 0; i < MAX_PRIORITY; ++i) {
+
             std::queue<COROUTINE_ID> &running_q = m_tasks.coroutine_running_queue[i];
             std::queue<std::function<void(void)>> &task_q = m_tasks.task_queue[i];
 
-            // 执行所有待执行任务
-            while(!task_q.empty()) {
+            if(i == priority && !msg_processed) {
+                msg_processed = true;
+
+                ProcessMessageInternal(msg, priority);
+
+                if(m_state == ActorState::STOPPED) {
+                    return true;
+                }
+
+                goto process_task;
+            }
+
+            if(!task_q.empty()) {
                 std::function<void(void)> task_handler = task_q.front();
                 task_q.pop();
+
                 COROUTINE_ID co_id = m_coroutine_scheduler.New(task_handler);
 
                 ResumeCoroutine(co_id, i);
@@ -148,9 +138,11 @@ public:
                 if(m_state == ActorState::STOPPED) {
                     return true;
                 }
+
+                goto process_task;
             }
-            // 执行所有待执行协程
-            while(!running_q.empty()) {
+
+            if(!running_q.empty()) {
                 COROUTINE_ID co_id = running_q.front();
                 running_q.pop();
 
@@ -162,10 +154,12 @@ public:
                 if(m_state == ActorState::STOPPED) {
                     return true;
                 }
+
+                goto process_task;
             }
         }
 
-        return false;
+        return m_state == ActorState::STOPPED;
     }
 
     void SetMessageHandler(unsigned type, ACTOR_MESSAGE_HANDLER handler) {
@@ -249,24 +243,6 @@ public:
         m_tasks.task_queue[priority].emplace(callback);
     }
 
-    // 只能在协程外调用
-    void ResumeCoroutine(COROUTINE_ID id, unsigned priority) {
-#ifdef ACTOR_SCHEDULER_PROFILING
-        m_statistics.cpu_cost_start = thread_cpu_time();
-#endif
-        m_coroutine_scheduler.Resume(id);
-
-#ifdef ACTOR_SCHEDULER_PROFILING
-        m_statistics.cpu_cost += (thread_cpu_time() - m_statistics.cpu_cost_start);
-#endif
-
-        // 该函数是否在执行中挂起
-        // 挂起的话，得暂时保存这个协程
-        if(CoroutineIsSuspended(id)) {
-            m_tasks.coroutine_suspended_set[id] = priority;
-        }
-    }
-
     // 只能在协程里调用
     void SuspendCoroutine() {
         m_coroutine_scheduler.Yield();
@@ -276,7 +252,6 @@ public:
         auto iter = m_tasks.coroutine_suspended_set.find(id);
 
         if(iter == m_tasks.coroutine_suspended_set.end()) {
-            actor_error_log("can NOT wakeup coroutine, coroutine id is not found: %llu", id);
             return;
         }
 
@@ -355,6 +330,47 @@ private:
         m_tasks.timer_sessions.erase(iter);
 
         WakeupCoroutine(co_id);
+    }
+
+    void ProcessMessageInternal(ActorMessage &msg, unsigned priority) {
+        unsigned type = msg.type;
+
+        auto iter = m_message_handlers.find(type);
+
+        if(iter == m_message_handlers.end()) {
+            actor_error_log("actor (%d:%s) can NOT get handler for message type %u",
+                    m_id, m_name.c_str(), type);
+            return;
+        }
+
+        ACTOR_MESSAGE_HANDLER &handler = iter->second;
+
+        COROUTINE_ID co_id = m_coroutine_scheduler.New(std::bind(handler, msg));
+
+        ResumeCoroutine(co_id, priority);
+
+#ifdef ACTOR_SCHEDULER_PROFILING
+        ++m_statistics.task_processed;
+        ++m_statistics.message_processed;
+#endif
+    }
+
+    // 只能在协程外调用
+    void ResumeCoroutine(COROUTINE_ID id, unsigned priority) {
+#ifdef ACTOR_SCHEDULER_PROFILING
+        m_statistics.cpu_cost_start = thread_cpu_time();
+#endif
+        m_coroutine_scheduler.Resume(id);
+
+#ifdef ACTOR_SCHEDULER_PROFILING
+        m_statistics.cpu_cost += (thread_cpu_time() - m_statistics.cpu_cost_start);
+#endif
+
+        // 该函数是否在执行中挂起
+        // 挂起的话，得暂时保存这个协程
+        if(CoroutineIsSuspended(id)) {
+            m_tasks.coroutine_suspended_set[id] = priority;
+        }
     }
 
     bool CoroutineIsSuspended(COROUTINE_ID id) {
@@ -589,8 +605,7 @@ static void process_actor_message(std::shared_ptr<ActorContext> &context,
             break;
         }
 
-        actor_stopped = context->ProcessMessage(msg, priority) ||
-            context->ProcessPendingTasks();
+        actor_stopped = context->ProcessMessage(msg, priority);
 
         if(actor_stopped) {
             break;
