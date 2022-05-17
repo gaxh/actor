@@ -51,6 +51,8 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
     }
 
     void Resume(COROUTINE_ID id) {
+        m_last_suspended = false;
+
         if(m_current != NULL) {
             // can only call Resume at main coroutine
             COROUTINE_ERROR("Resume failed: can only Resume at main coroutine");
@@ -97,6 +99,8 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
         if(co->m_status == CoroutineStatus::DEAD) {
             m_coroutines.erase(co->m_id);
             ReleaseCoroutineObject(co);
+        } else {
+            m_last_suspended = true;
         }
     }
 
@@ -133,6 +137,10 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
 
     size_t PoolSize() {
         return m_pool.size();
+    }
+
+    bool LastSuspended() {
+        return m_last_suspended;
     }
 
     // private functions
@@ -227,6 +235,7 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
     ucontext_t m_main_context;
 
     Coroutine *m_current = NULL;
+    bool m_last_suspended = false;
 };
 
 // interfaces of CoroutineScheduler
@@ -275,5 +284,9 @@ size_t CoroutineScheduler::Size() {
 
 size_t CoroutineScheduler::PoolSize() {
     return m_impl->PoolSize();
+}
+
+bool CoroutineScheduler::LastSuspended() {
+    return m_impl->LastSuspended();
 }
 

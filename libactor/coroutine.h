@@ -38,6 +38,8 @@ public:
 
     size_t PoolSize();
 
+    bool LastSuspended();
+
 private:
     struct IMPL;
     IMPL *m_impl = NULL;

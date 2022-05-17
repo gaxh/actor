@@ -70,7 +70,7 @@ public:
         size_t task_processed = 0;
         unsigned long long cpu_cost = 0;
         unsigned long long cpu_cost_start = 0;
-        size_t message_queue_overload = 128;
+        size_t message_queue_overload = 32;
     };
 #endif
 
@@ -182,7 +182,8 @@ process_task:
         if(queue_size >= m_statistics.message_queue_overload) {
             m_statistics.message_queue_overload += m_statistics.message_queue_overload;
 
-            actor_error_log("message queue is overloaded, id=%u", m_id);
+            actor_error_log("message queue is overloaded, id=%u, message_queue_overload=%zu",
+                    m_id, m_statistics.message_queue_overload);
         }
 #endif
     }
@@ -291,6 +292,15 @@ process_task:
     const Statistics &GetStatistics() {
         return m_statistics;
     }
+
+    void TraceRemainings() {
+        for(unsigned i = 0; i < MAX_PRIORITY; ++i) {
+            actor_debug_log("remaining of actor %u: priority=%u, task_queue_size=%zu, running_queue_size=%zu",
+                    m_id, i, m_tasks.task_queue[i].size(), m_tasks.coroutine_running_queue[i].size());
+        }
+        actor_debug_log("remaining of actor %u: suspended_set_size=%zu, timer_size=%zu",
+                m_id, m_tasks.coroutine_suspended_set.size(), m_tasks.timer_sessions.size());
+    }
 #endif
 
 private:
@@ -368,13 +378,9 @@ private:
 
         // 该函数是否在执行中挂起
         // 挂起的话，得暂时保存这个协程
-        if(CoroutineIsSuspended(id)) {
+        if(m_coroutine_scheduler.LastSuspended()) {
             m_tasks.coroutine_suspended_set[id] = priority;
         }
-    }
-
-    bool CoroutineIsSuspended(COROUTINE_ID id) {
-        return m_coroutine_scheduler.Status(id) == CoroutineStatus::SUSPENDED;
     }
 
     static void OnSleepCoroutineTimeout(unsigned actor_id, ActorSchedulerTimer::TIMER_ID timer_id) {
@@ -633,6 +639,7 @@ static void process_actor_message(std::shared_ptr<ActorContext> &context,
         actor_info_log("statistics of actor %u: message_processed=%zu, task_processed=%zu, cpu_cost=%llu, message_queue_overload=%zu",
                 context->GetId(), stats.message_processed, stats.task_processed,
                 stats.cpu_cost, stats.message_queue_overload);
+        context->TraceRemainings();
 #endif
     }
 }
