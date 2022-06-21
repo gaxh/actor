@@ -30,6 +30,8 @@ public:
 
     void Yield();
 
+    void Close(COROUTINE_ID id);
+
     CoroutineStatus Status(COROUTINE_ID id);
 
     COROUTINE_ID Current();

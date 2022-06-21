@@ -276,14 +276,27 @@ process_task:
         SuspendCoroutine();
     }
 
-    size_t GetUnfinishedCoroutineNumber() {
+    size_t CloseUnfinishedCoroutines() {
         size_t ret = 0;
 
         for(unsigned i = 0; i < MAX_PRIORITY; ++i) {
-            ret += m_tasks.coroutine_running_queue[i].size();
+            std::queue<COROUTINE_ID> &q = m_tasks.coroutine_running_queue[i];
+
+            while(!q.empty()) {
+                COROUTINE_ID co_id = q.front();
+                q.pop();
+
+                m_coroutine_scheduler.Close(co_id);
+                ++ret;
+            }
         }
 
-        ret += m_tasks.coroutine_suspended_set.size();
+        for(auto &&iter: m_tasks.coroutine_suspended_set) {
+            COROUTINE_ID co_id = iter.first;
+            m_coroutine_scheduler.Close(co_id);
+            ++ret;
+        }
+        m_tasks.coroutine_suspended_set.clear();
 
         return ret;
     }
@@ -629,9 +642,10 @@ static void process_actor_message(std::shared_ptr<ActorContext> &context,
 
         actor_info_log("actor has stopped, module_name=%s, id=%u", context->GetModuleName().c_str(), context->GetId());
 
-        if(context->GetUnfinishedCoroutineNumber() != 0) {
-            actor_error_log("actor has unfinished coroutines, may cause memory leak. id=%u",
-                    context->GetId());
+        size_t stop_coroutine_number = context->CloseUnfinishedCoroutines();
+        if(stop_coroutine_number) {
+            actor_error_log("actor has %zu unfinished coroutines. force close all. id=%u",
+                    stop_coroutine_number, context->GetId());
         }
 
 #ifdef ACTOR_SCHEDULER_PROFILING

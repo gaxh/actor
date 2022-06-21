@@ -119,6 +119,47 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
         co->m_status = CoroutineStatus::SUSPENDED;
         m_current = NULL;
         swapcontext(&co->m_context, &m_main_context);
+
+        if(co->m_close_request) {
+            throw CoroutineCloseRequest();
+        }
+    }
+
+    void Close(COROUTINE_ID id) {
+        m_last_suspended = false;
+
+        if(m_current != NULL) {
+            // can ONLY call Close at main coroutine
+            COROUTINE_ERROR("Close failed: can only Close at main coroutine");
+            return;
+        }
+
+        auto iter = m_coroutines.find(id);
+
+        if(iter == m_coroutines.end()) {
+            COROUTINE_ERROR("Close failed: can not get coroutine object %llu", id);
+            return;
+        }
+
+        Coroutine *co = iter->second;
+        CoroutineStatus status = co->m_status;
+
+        if(status == CoroutineStatus::READY) {
+            co->m_status = CoroutineStatus::DEAD;
+        } else if(status == CoroutineStatus::SUSPENDED) {
+            co->m_close_request = 1;
+            co->m_status = CoroutineStatus::RUNNING;
+            m_current = co;
+            swapcontext(&m_main_context, &co->m_context);
+        } else {
+            COROUTINE_ERROR("Close failed: coroutine status is %d", (int)status);
+        }
+
+        // after swap back, delete DEAD coroutine
+
+        assert(co->m_status == CoroutineStatus::DEAD);
+        m_coroutines.erase(co->m_id);
+        ReleaseCoroutineObject(co);
     }
 
     CoroutineStatus Status(COROUTINE_ID id) {
@@ -157,7 +198,10 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
         CoroutineScheduler::IMPL *this_ptr = (CoroutineScheduler::IMPL *)p;
 
         Coroutine *co = this_ptr->m_current;
-        co->m_fn();
+        try {
+            co->m_fn();
+        } catch(CoroutineCloseRequest &e) {
+        }
         co->m_status = CoroutineStatus::DEAD; // will delete this coroutine after swap back to main coroutine
 
         this_ptr->m_current = NULL;
@@ -179,6 +223,7 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
         co->m_id = id;
         co->m_fn = fn;
         co->m_scheduler = this;
+        co->m_close_request = 0;
         co->m_status = CoroutineStatus::READY;
         co->m_stack_capacity = m_stack_capacity;
         co->m_dog_tag = COROUTINE_DOG_TAG;
@@ -213,11 +258,15 @@ void Init(size_t stack_capacity, size_t pool_capacity) {
         return next_id;
     }
 
+    struct CoroutineCloseRequest {
+    };
+
     struct Coroutine {
         COROUTINE_ID m_id;
         COROUTINE_FUNC m_fn;
         ucontext_t m_context;
         CoroutineScheduler::IMPL *m_scheduler;
+        int m_close_request;
         CoroutineStatus m_status;
         size_t m_stack_capacity;
         int m_dog_tag;
@@ -288,5 +337,9 @@ size_t CoroutineScheduler::PoolSize() {
 
 bool CoroutineScheduler::LastSuspended() {
     return m_impl->LastSuspended();
+}
+
+void CoroutineScheduler::Close(COROUTINE_ID id) {
+    return m_impl->Close(id);
 }
 
