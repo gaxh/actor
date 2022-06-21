@@ -788,8 +788,7 @@ void actor_scheduler_send(unsigned id, unsigned type, std::shared_ptr<void> payl
 // start & stop
 
 unsigned actor_scheduler_start(const std::string &module_name, const std::string &start_params) {
-    const LoadedClassDescriberInterface<Actor> *describer =
-        class_loader_get_class_describer<Actor>(module_name, "Actor");
+    auto describer = class_loader_get_class_describer<Actor>(module_name, "Actor");
 
     if(!describer) {
         actor_error_log("can NOT get describer for module %s", module_name.c_str());

@@ -19,19 +19,20 @@ bool class_loader_load_library(const std::string &path) {
         WLockGuard g(class_loader_internal_lock());
         s_binary_handers[path] = handler;
     }
+
     return true;
 }
 
-static std::map<std::string, void *> s_sub_loaders; // base_class_name -> sub_loader
+static std::map<std::string, std::shared_ptr<void>> s_sub_loaders; // base_class_name -> sub_loader
 
-void *class_loader_get_sub_loader(const std::string &base_class_name) {
+std::shared_ptr<void> class_loader_get_sub_loader(const std::string &base_class_name) {
     auto iter = s_sub_loaders.find(base_class_name);
 
     return iter != s_sub_loaders.end() ? iter->second : NULL;
 }
 
-void class_loader_set_sub_loader(const std::string &base_class_name, void *sub_loader) {
-    if(sub_loader != NULL) {
+void class_loader_set_sub_loader(const std::string &base_class_name, const std::shared_ptr<void> &sub_loader) {
+    if(sub_loader) {
         s_sub_loaders[base_class_name] = sub_loader;
     } else {
         s_sub_loaders.erase(base_class_name);
@@ -77,3 +78,4 @@ static RWLock s_internal_lock;
 RWLock &class_loader_internal_lock() {
     return s_internal_lock;
 }
+
