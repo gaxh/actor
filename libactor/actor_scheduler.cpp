@@ -600,6 +600,7 @@ ActorState actor_scheduler_currentstate() {
 static constexpr int WORKERS_MAX_NUMBER = 1024;
 static std::thread *s_workers[WORKERS_MAX_NUMBER] = {0};
 static std::thread *s_timer_thread = NULL;
+static std::thread *s_monitor_thread = NULL;
 static volatile int s_post_exit = 0;
 
 static void process_actor_message(std::shared_ptr<ActorContext> &context,
@@ -708,9 +709,30 @@ static void actor_timer_thread() {
     }
 }
 
+static void actor_monitor_thread() {
+    for(;;) {
+        if(s_post_exit) {
+            if(get_current_has_no_context()) {
+                break;
+            }
+
+            // notify all actor to exit
+            std::vector<unsigned> actor_ids = get_all_context_ids();
+            actor_info_log("wait for %zu actors to stop", actor_ids.size());
+
+            for(unsigned id: actor_ids) {
+                actor_scheduler_stop(id);
+            }
+        }
+
+        usleep(500000);
+    }
+}
+
 void actor_scheduler_init(int worker_nb) {
     actor_timer_init();
 
+    s_monitor_thread = new std::thread(actor_monitor_thread);
     s_timer_thread = new std::thread(actor_timer_thread);
 
     for(int i = 0; i < worker_nb && i < WORKERS_MAX_NUMBER; ++i) {
@@ -724,6 +746,15 @@ void actor_scheduler_destroy() {
 }
 
 void actor_scheduler_join() {
+    if(s_monitor_thread->joinable()) {
+        actor_info_log("wait for monitor thread");
+        s_monitor_thread->join();
+        actor_info_log("monitor thread has stopped");
+
+        delete s_monitor_thread;
+        s_monitor_thread = NULL;
+    }
+
     for(int i = 0; i < WORKERS_MAX_NUMBER; ++i) {
         std::thread *worker = s_workers[i];
 
@@ -749,13 +780,6 @@ void actor_scheduler_join() {
 
 void actor_scheduler_post_exit() {
     s_post_exit = 1;
-
-    // notify all actor to exit
-    std::vector<unsigned> actor_ids = get_all_context_ids();
-
-    for(unsigned id: actor_ids) {
-        actor_scheduler_stop(id);
-    }
 }
 
 // end of init & execute
