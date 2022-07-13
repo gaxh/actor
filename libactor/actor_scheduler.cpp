@@ -162,7 +162,7 @@ process_task:
         return m_state == ActorState::STOPPED;
     }
 
-    void SetMessageHandler(unsigned type, ACTOR_MESSAGE_HANDLER handler) {
+    void SetMessageHandler(unsigned type, ACTOR_MESSAGE_RAW_HANDLER handler) {
         if(handler) {
             m_message_handlers[type] = handler;
         } else {
@@ -366,7 +366,7 @@ private:
             return;
         }
 
-        ACTOR_MESSAGE_HANDLER &handler = iter->second;
+        ACTOR_MESSAGE_RAW_HANDLER &handler = iter->second;
 
         COROUTINE_ID co_id = m_coroutine_scheduler.New(std::bind(handler, msg));
 
@@ -412,7 +412,7 @@ private:
     std::string m_name;
     Actor *m_actor;
     std::string m_start_params;
-    std::unordered_map<unsigned, ACTOR_MESSAGE_HANDLER> m_message_handlers;
+    std::unordered_map<unsigned, ACTOR_MESSAGE_RAW_HANDLER> m_message_handlers;
     std::shared_ptr<ActorMessageQueue> m_message_queue;
     unsigned long m_next_seq_id = 0;
     ActorState m_state = ActorState::NEW;
@@ -786,8 +786,14 @@ void actor_scheduler_post_exit() {
 
 // message
 
-void actor_scheduler_handler(unsigned type, ACTOR_MESSAGE_HANDLER handler) {
+void actor_scheduler_handler_raw(unsigned type, ACTOR_MESSAGE_RAW_HANDLER handler) {
     get_current_context()->SetMessageHandler(type, handler);
+}
+
+void actor_scheduler_handler(unsigned type, ACTOR_MESSAGE_HANDLER handler) {
+    get_current_context()->SetMessageHandler(type, [handler](ActorMessage &message) {
+                handler(message.from_id, message.type, message.payload);
+            });
 }
 
 static void actor_scheduler_send_to_context(ActorContext *context, const ActorMessage &message, unsigned priority) {

@@ -18,9 +18,8 @@ public:
 
         StartFinished(0);
 
-        actor_scheduler_handler(888, [](ActorMessage &msg) {
-                std::shared_ptr<std::string> payload = std::static_pointer_cast<std::string>(msg.payload);
-                actor_info_log("receive message from %d: %s",msg.from_id, payload->c_str());
+        actor_scheduler_handler(888, [](unsigned from_id, unsigned type, std::shared_ptr<void> payload) {
+                actor_info_log("receive message from %d: %s", from_id, std::static_pointer_cast<std::string>(payload)->c_str());
                 });
 
     }

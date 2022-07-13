@@ -65,7 +65,10 @@ ActorState actor_scheduler_currentstate();
 ActorState actor_scheduler_state(unsigned id);
 
 // 注册当前actor的消息处理函数
-using ACTOR_MESSAGE_HANDLER = typename std::function<void(ActorMessage &message)>;
+using ACTOR_MESSAGE_RAW_HANDLER = typename std::function<void(ActorMessage &message)>;
+void actor_scheduler_handler_raw(unsigned type, ACTOR_MESSAGE_RAW_HANDLER handler);
+
+using ACTOR_MESSAGE_HANDLER = typename std::function<void(unsigned from_id, unsigned type, std::shared_ptr<void> payload)>;
 void actor_scheduler_handler(unsigned type, ACTOR_MESSAGE_HANDLER handler);
 
 // 发送消息给某个actor
