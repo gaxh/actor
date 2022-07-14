@@ -183,6 +183,10 @@ public:
 
     // 返回actor是否已结束
     bool ProcessMessage(ActorMessage &msg, unsigned priority) {
+        SpinTryLockGuard stlg(AvoidConcurrency());
+
+        assert(stlg.Trylock());
+
         bool msg_processed = false;
 
 process_task:
@@ -696,13 +700,6 @@ static bool process_actor_message(std::shared_ptr<ActorContext> &context,
     if(!context) {
         actor_error_log("process message failed: context %u is NULL", q->Id());
         return false;
-    }
-
-    SpinTryLockGuard stlg(context->AvoidConcurrency());
-
-    if(!stlg.Trylock()) {
-        actor_error_log("context has concurrency issue, id=%u, id=%u", context->GetId(), q->Id());
-        abort();
     }
 
     ActorMessage msg;
