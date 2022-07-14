@@ -9,7 +9,7 @@ depend_libs := -ldl -lpthread
 
 all : actor_test_main.out
 
-cxx_flag := -g -Os -Wall -I${libactor_root} ${my_cxx_flag}
+cxx_flag := -g -O2 -Wall -I${libactor_root} ${my_cxx_flag}
 
 ld_flag := -rdynamic
 

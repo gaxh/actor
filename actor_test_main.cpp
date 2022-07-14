@@ -22,13 +22,13 @@ static void create_custom_actors() {
     actor_scheduler_start("TestSenderActor", "sender__");
     actor_scheduler_start("TestCoroutineActor", "coroutine__");
     actor_scheduler_start("TestCreateAnotherActor", "create__");
-//    actor_scheduler_start("TestPingActor", "ping__");
+    actor_scheduler_start("TestPingActor", "ping__");
 }
 
 static void run_actor_scheduler() {
     signal(SIGINT, post_exit_handler);
 
-    actor_scheduler_init(8);
+    actor_scheduler_init(4);
 
     create_custom_actors();
 

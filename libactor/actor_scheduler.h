@@ -4,8 +4,27 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <queue>
+
 #include "coroutine.h"
-#include "actor_message.h"
+#include "spinlock.h"
+
+// 系统消息类型，用户不能占用
+enum ActorMessageReservedType : unsigned {
+    BEGIN = 0xffff0000,
+    ACTOR_START,
+    ACTOR_STOP,
+    ACTOR_TIMER,
+    END,
+};
+
+struct ActorMessage {
+    unsigned from_id; // 消息是从哪个actor发来的
+    unsigned long seq_id; // 消息序列号
+    unsigned long long reserved;
+    unsigned type; // 消息类型
+    std::shared_ptr<void> payload; // 消息内容
+};
 
 constexpr unsigned ACTOR_INVALID_ID = 0;
 

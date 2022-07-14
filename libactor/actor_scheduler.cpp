@@ -1,8 +1,6 @@
 #include "actor_scheduler.h"
-#include "actor_message.h"
-#include "spinlock.h"
+
 #include "actor.h"
-#include "coroutine.h"
 #include "class_loader.h"
 #include "actor_scheduler_timer.h"
 #include "actor_scheduler_log.h"
@@ -10,10 +8,13 @@
 #include <unistd.h>
 #include <assert.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <unordered_map>
 #include <vector>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 
 // timer
 
@@ -51,6 +52,84 @@ static unsigned long long thread_cpu_time() {
 #endif
 
 // end of timer
+
+// message queue
+
+class ActorMessageQueue;
+
+static struct {
+    std::queue<std::shared_ptr<ActorMessageQueue>> q;
+    std::mutex mutex;
+    std::condition_variable condition;
+} s_global_message_queue;
+
+class ActorMessageQueue : public std::enable_shared_from_this<ActorMessageQueue> {
+public:
+    ActorMessageQueue(unsigned id, unsigned max_priority) : m_id(id), m_max_priority(max_priority) {
+        m_q.resize(max_priority);
+    }
+
+    ~ActorMessageQueue() {
+    }
+
+    unsigned Id() {
+        return m_id;
+    }
+
+    void Push(const ActorMessage &m, unsigned priority) {
+        assert(priority < m_max_priority);
+
+        SpinLockGuard g(m_lock);
+        m_q[priority].emplace(m);
+
+        if(!m_in_global_mq) {
+            m_in_global_mq = true;
+
+            std::unique_lock<std::mutex> lock(s_global_message_queue.mutex);
+            s_global_message_queue.q.emplace(shared_from_this());
+            s_global_message_queue.condition.notify_one();
+        }
+    }
+
+    bool Pop(ActorMessage &m, unsigned &priority) {
+        SpinLockGuard g(m_lock);
+
+        for(unsigned i = 0; i < m_max_priority; ++i) {
+            std::queue<ActorMessage> &q = m_q[i];
+
+            if(!q.empty()) {
+                m = q.front();
+                priority = i;
+                q.pop();
+
+                return true;
+            }
+        }
+
+        m_in_global_mq = false;
+        return false;
+    }
+
+    size_t Size() {
+        SpinLockGuard g(m_lock);
+
+        size_t sz = 0;
+        for(unsigned i = 0; i < m_max_priority; ++i) {
+            sz += m_q[i].size();
+        }
+        return sz;
+    }
+
+private:
+    unsigned m_id; // 消息队列所属actor
+    unsigned m_max_priority;
+    std::vector<std::queue<ActorMessage>> m_q;
+    bool m_in_global_mq = false;
+    SpinLock m_lock;
+};
+
+
+// end of message queue
 
 // context
 
@@ -301,6 +380,10 @@ process_task:
         return ret;
     }
 
+    SpinLock &AvoidConcurrency() {
+        return m_avoid_concurrency;
+    }
+
 #ifdef ACTOR_SCHEDULER_PROFILING
     const Statistics &GetStatistics() {
         return m_statistics;
@@ -425,6 +508,8 @@ private:
     } m_tasks;
 
     CoroutineScheduler m_coroutine_scheduler;
+
+    SpinLock m_avoid_concurrency;
 
 #ifdef ACTOR_SCHEDULER_PROFILING
     Statistics m_statistics;
@@ -603,14 +688,21 @@ static std::thread *s_timer_thread = NULL;
 static std::thread *s_monitor_thread = NULL;
 static volatile int s_post_exit = 0;
 
-static void process_actor_message(std::shared_ptr<ActorContext> &context,
+static bool process_actor_message(std::shared_ptr<ActorContext> &context,
         std::shared_ptr<ActorMessageQueue> &q) {
-
+    
     static constexpr int max_proc_message_nb = 20;
 
     if(!context) {
         actor_error_log("process message failed: context %u is NULL", q->Id());
-        return;
+        return false;
+    }
+
+    SpinTryLockGuard stlg(context->AvoidConcurrency());
+
+    if(!stlg.Trylock()) {
+        actor_error_log("context has concurrency issue, id=%u, id=%u", context->GetId(), q->Id());
+        abort();
     }
 
     ActorMessage msg;
@@ -619,9 +711,11 @@ static void process_actor_message(std::shared_ptr<ActorContext> &context,
     set_current_context(context.get());
 
     bool actor_stopped = false;
+    bool ret = true;
 
     for(int i = 0; i < max_proc_message_nb; ++i) {
         if(!q->Pop(msg, priority)) {
+            ret = false; // 消息队列已经没有消息了，函数返回后不再将它放入全局消息队列
             break;
         }
 
@@ -657,41 +751,38 @@ static void process_actor_message(std::shared_ptr<ActorContext> &context,
         context->TraceRemainings();
 #endif
     }
+
+    return ret;
 }
 
 static void actor_worker_thread(int worker_id) {
     // TODO: possibly bind thread to one cpu
 
-    int acquire_fail_nb = 0;
-    constexpr int acquire_fail_threshold = 10;
-
+    std::unique_lock<std::mutex> lock(s_global_message_queue.mutex);
     for(;;) {
 
         if(s_post_exit && get_current_has_no_context()) {
             break;
-        }
+        } else if(s_global_message_queue.q.empty()) {
+            s_global_message_queue.condition.wait_for(lock, std::chrono::seconds(1));
+        } else {
+            std::shared_ptr<ActorMessageQueue> q = s_global_message_queue.q.front();
+            s_global_message_queue.q.pop();
 
-        std::shared_ptr<ActorMessageQueue> q = ActorMessageQueue::Acquire();
+            lock.unlock();
 
-        if(!q) {
-            ++acquire_fail_nb;
+            unsigned id = q->Id();
 
-            if(acquire_fail_nb >= acquire_fail_threshold) {
-                acquire_fail_nb = 0;
+            std::shared_ptr<ActorContext> c = get_context_by_id(id);
 
-                usleep(1000);
+            bool back = process_actor_message(c, q);
+
+            lock.lock();
+
+            if(back) {
+                s_global_message_queue.q.emplace(q);
             }
-            continue;
         }
-
-        unsigned id = q->Id();
-
-        std::shared_ptr<ActorContext> c = get_context_by_id(id);
-
-        // process message
-        process_actor_message(c, q);
-
-        q->Release();
     }
 }
 
@@ -727,17 +818,30 @@ static void actor_monitor_thread() {
 
         usleep(500000);
     }
+
+    // wake up all worker threads
+    {
+        std::unique_lock<std::mutex> lock(s_global_message_queue.mutex);
+        s_global_message_queue.condition.notify_all();
+    }
 }
 
 void actor_scheduler_init(int worker_nb) {
     actor_timer_init();
 
     s_monitor_thread = new std::thread(actor_monitor_thread);
+    pthread_setname_np(s_monitor_thread->native_handle(), "s_monitor");
+
     s_timer_thread = new std::thread(actor_timer_thread);
+    pthread_setname_np(s_timer_thread->native_handle(), "s_timer");
 
     for(int i = 0; i < worker_nb && i < WORKERS_MAX_NUMBER; ++i) {
         actor_info_log("create worker thread: %d", i);
         s_workers[i] = new std::thread(actor_worker_thread, i);
+
+        char thread_name[32];
+        snprintf(thread_name, sizeof(thread_name), "s_worker_%d", i);
+        pthread_setname_np(s_workers[i]->native_handle(), thread_name);
     }
 }
 
